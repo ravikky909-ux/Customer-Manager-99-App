@@ -7,8 +7,12 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -20,30 +24,54 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Flutter stable
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+      - name: Check Flutter version
+        run: flutter --version
+
       - name: Create Android platform files
+        shell: bash
         run: |
-          flutter create --platforms=android --org com.gamerush99 --project-name customer_manager_99 .
-          python3 scripts/prepare_android.py
+          if [ ! -d "android" ]; then
+            echo "Android folder not found. Creating Android platform..."
+            flutter create \
+              --platforms=android \
+              --org com.gamerush99 \
+              --project-name customer_manager_99 \
+              .
+          else
+            echo "Android folder already exists."
+          fi
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Generate full-fit app icon
-        run: dart run flutter_launcher_icons
+      - name: Generate app icon
+        shell: bash
+        run: |
+          if grep -q "flutter_launcher_icons:" pubspec.yaml; then
+            dart run flutter_launcher_icons
+          else
+            echo "flutter_launcher_icons configuration not found. Skipping icon generation."
+          fi
 
-      - name: Analyze source
+      - name: Analyze Flutter project
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
-      - name: Run tests
-        run: flutter test
+      - name: Run available tests
+        shell: bash
+        run: |
+          if [ -d "test" ] && find test -name "*_test.dart" | grep -q .; then
+            flutter test
+          else
+            echo "No Flutter tests found. Skipping tests."
+          fi
 
       - name: Build release APK
         env:
@@ -52,39 +80,43 @@ jobs:
           FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
+        shell: bash
         run: |
-          ARGS=()
+          BUILD_ARGS=()
 
           if [ -n "$FIREBASE_API_KEY" ]; then
-            ARGS+=("--dart-define=FIREBASE_API_KEY=$FIREBASE_API_KEY")
-            ARGS+=("--dart-define=FIREBASE_APP_ID=$FIREBASE_APP_ID")
-            ARGS+=("--dart-define=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID")
-            ARGS+=("--dart-define=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID")
-            ARGS+=("--dart-define=FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET")
+            BUILD_ARGS+=("--dart-define=FIREBASE_API_KEY=$FIREBASE_API_KEY")
           fi
 
-          flutter build apk --release --no-shrink "${ARGS[@]}"
+          if [ -n "$FIREBASE_APP_ID" ]; then
+            BUILD_ARGS+=("--dart-define=FIREBASE_APP_ID=$FIREBASE_APP_ID")
+          fi
+
+          if [ -n "$FIREBASE_MESSAGING_SENDER_ID" ]; then
+            BUILD_ARGS+=("--dart-define=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID")
+          fi
+
+          if [ -n "$FIREBASE_PROJECT_ID" ]; then
+            BUILD_ARGS+=("--dart-define=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID")
+          fi
+
+          if [ -n "$FIREBASE_STORAGE_BUCKET" ]; then
+            BUILD_ARGS+=("--dart-define=FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET")
+          fi
+
+          flutter build apk --release --no-shrink "${BUILD_ARGS[@]}"
 
       - name: Rename APK
+        shell: bash
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk Customer-Manager-99.apk
+          mkdir -p release
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             release/Customer-Manager-99.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Customer-Manager-99-APK
-          path: Customer-Manager-99.apk
+          path: release/Customer-Manager-99.apk
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload source package
-        uses: actions/upload-artifact@v4
-        with:
-          name: Customer-Manager-99-Source
-          path: |
-            lib/
-            assets/
-            pubspec.yaml
-            README.md
-            firebase.rules
           retention-days: 30
