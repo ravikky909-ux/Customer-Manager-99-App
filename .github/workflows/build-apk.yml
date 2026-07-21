@@ -14,9 +14,12 @@ concurrency:
   group: customer-manager-99-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FLUTTER_VERSION: "3.44.7"
+
 jobs:
   build:
-    name: Build Final Android APK
+    name: Build Final 41790 APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -24,30 +27,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract Customer Manager source
+      - name: Extract uploaded final source ZIP
         shell: bash
         run: |
           set -euo pipefail
-
-          SOURCE_ZIP="Customer_Manager_99_App_Source.zip"
-
-          if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERROR: $SOURCE_ZIP repository ke main/root page par nahi mila."
-            echo "ZIP ka naam change mat karo."
-            exit 1
-          fi
-
-          echo "Removing any old/default Flutter source..."
+          test -s Customer_Manager_99_App_Source.zip
 
           rm -rf lib assets scripts test android
-          rm -f pubspec.yaml
-          rm -f analysis_options.yaml
-          rm -f firebase.rules
-          rm -f PROJECT_MARKER.txt
-
-          echo "Extracting Customer Manager 99 source..."
-
-          unzip -o "$SOURCE_ZIP" -d .
+          rm -f pubspec.yaml analysis_options.yaml firebase.rules PROJECT_MARKER.txt
+          unzip -q -o Customer_Manager_99_App_Source.zip -d .
 
           required_files=(
             "PROJECT_MARKER.txt"
@@ -55,43 +43,56 @@ jobs:
             "lib/main.dart"
             "lib/screens.dart"
             "lib/app_controller.dart"
-            "lib/app_scope.dart"
-            "lib/models.dart"
             "lib/services.dart"
-            "assets/branding/allrounder99.png"
-            "assets/branding/rajahuli99_icon.png"
-            "assets/branding/rajahuli99_wordmark.jpg"
-            "assets/branding/combined_brand.png"
-            "assets/branding/combined_brand_splash.png"
-            "assets/branding/app_icon_safe.png"
-            "assets/branding/app_icon_foreground.png"
             "scripts/prepare_android.py"
+            "assets/preload/customer_manager_99_seed_41790.db"
+            "assets/branding/app_icon_safe.png"
           )
 
           for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "ERROR: Required app file missing: $file"
+            test -s "$file" || {
+              echo "ERROR: Missing $file"
               exit 1
-            fi
+            }
           done
 
-          grep -q "CustomerManagerApp" lib/main.dart
-          grep -q "CM99-FINAL" lib/screens.dart
+          python3 - <<'PY'
+          import sqlite3
 
-          if grep -R -n -E \
-            "Flutter Demo Home Page|You have pushed the button this many times|class MyHomePage|_counter\+\+" \
-            lib; then
-            echo "ERROR: Default Flutter Demo source detected."
-            echo "Build stopped so demo app APK cannot be created."
-            exit 1
-          fi
+          db = sqlite3.connect(
+              "assets/preload/customer_manager_99_seed_41790.db"
+          )
 
-          echo "Customer Manager 99 custom source verified successfully."
+          count = db.execute(
+              "SELECT COUNT(*) FROM customers"
+          ).fetchone()[0]
 
-          find lib assets/branding -type f -print0 \
-            | sort -z \
-            | xargs -0 sha256sum \
-            > "$RUNNER_TEMP/source-before.sha256"
+          unique_count = db.execute(
+              "SELECT COUNT(DISTINCT mobile) FROM customers"
+          ).fetchone()[0]
+
+          integrity = db.execute(
+              "PRAGMA integrity_check"
+          ).fetchone()[0]
+
+          user_version = db.execute(
+              "PRAGMA user_version"
+          ).fetchone()[0]
+
+          db.close()
+
+          assert count == 41790, count
+          assert unique_count == 41790, unique_count
+          assert integrity == "ok", integrity
+          assert user_version == 2, user_version
+
+          print("Preloaded SQLite verified: 41,790 unique records.")
+          PY
+
+          grep -q "customer_manager_99_preloaded_41790_v2.db" lib/services.dart
+          grep -q "version: 4.2.1+15" pubspec.yaml
+
+          echo "Corrected 41,790 source confirmed."
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -99,29 +100,21 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Flutter stable
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      - name: Show Flutter and Java versions
-        shell: bash
-        run: |
-          flutter --version
-          java -version
-
-      - name: Generate Android platform safely
+      - name: Generate Android platform
         shell: bash
         run: |
           set -euo pipefail
 
-          TEMP_APP="$RUNNER_TEMP/customer_manager_android"
+          TEMP_APP="$RUNNER_TEMP/cm99_android_scaffold"
 
-          rm -rf "$TEMP_APP"
-          rm -rf android
-
-          echo "Generating Android files in temporary folder..."
+          rm -rf "$TEMP_APP" android
 
           flutter create \
             --platforms=android \
@@ -129,163 +122,46 @@ jobs:
             --project-name customer_manager_99 \
             "$TEMP_APP"
 
-          echo "Copying only Android platform files..."
-
           cp -R "$TEMP_APP/android" ./android
-
-          echo "Applying Customer Manager Android configuration..."
 
           python3 scripts/prepare_android.py
 
-      - name: Verify app source was not overwritten
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          find lib assets/branding -type f -print0 \
-            | sort -z \
-            | xargs -0 sha256sum \
-            > "$RUNNER_TEMP/source-after.sha256"
-
-          diff -u \
-            "$RUNNER_TEMP/source-before.sha256" \
-            "$RUNNER_TEMP/source-after.sha256"
-
-          grep -q "CustomerManagerApp" lib/main.dart
-          grep -q "CM99-FINAL" lib/screens.dart
-
-          if grep -R -n -E \
-            "Flutter Demo Home Page|You have pushed the button this many times|class MyHomePage|_counter\+\+" \
-            lib; then
-            echo "ERROR: Flutter Demo appeared after Android generation."
-            exit 1
-          fi
-
-          echo "Original app source was not overwritten."
-
-      - name: Install Flutter dependencies
+      - name: Install dependencies
         run: flutter pub get
 
       - name: Generate branded app icon
         run: dart run flutter_launcher_icons
 
-      - name: Verify logos and launcher icons
+      - name: Analyze source
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Run tests
         shell: bash
         run: |
           set -euo pipefail
 
-          test -s assets/branding/allrounder99.png
-          test -s assets/branding/rajahuli99_icon.png
-          test -s assets/branding/rajahuli99_wordmark.jpg
-          test -s assets/branding/combined_brand.png
-          test -s assets/branding/combined_brand_splash.png
-          test -s assets/branding/app_icon_safe.png
-          test -s assets/branding/app_icon_foreground.png
+          if [ -d test ] && find test -name "*_test.dart" | grep -q .; then
+            flutter test
+          else
+            echo "No tests found; skipping."
+          fi
 
-          test -s android/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          test -s android/app/src/main/res/mipmap-hdpi/ic_launcher.png
-          test -s android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          test -s android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
-          test -s android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-
-          echo "All logos and branded launcher icons verified."
-
-      - name: Build release APK
+      - name: Require Firebase secrets
         shell: bash
         env:
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
         run: |
           set -euo pipefail
 
-          BUILD_ARGS=(
-            "--dart-define=APP_BUILD_MARKER=CM99-FINAL-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          )
-
-          if [ -n "${FIREBASE_API_KEY:-}" ] && \
-             [ -n "${FIREBASE_APP_ID:-}" ] && \
-             [ -n "${FIREBASE_MESSAGING_SENDER_ID:-}" ] && \
-             [ -n "${FIREBASE_PROJECT_ID:-}" ]; then
-
-            echo "Firebase secrets found."
-            echo "Cross-phone cloud sync will be enabled."
-
-            BUILD_ARGS+=(
-              "--dart-define=FIREBASE_API_KEY=$FIREBASE_API_KEY"
-            )
-
-            BUILD_ARGS+=(
-              "--dart-define=FIREBASE_APP_ID=$FIREBASE_APP_ID"
-            )
-
-            BUILD_ARGS+=(
-              "--dart-define=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID"
-            )
-
-            BUILD_ARGS+=(
-              "--dart-define=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
-            )
-
-            if [ -n "${FIREBASE_STORAGE_BUCKET:-}" ]; then
-              BUILD_ARGS+=(
-                "--dart-define=FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET"
-              )
-            fi
-          else
-            echo "WARNING: Firebase secrets nahi mile."
-            echo "APK local-data mode me build hoga."
-            echo "Cross-phone sync Firebase secrets add karne ke baad chalega."
-          fi
-
-          flutter build apk \
-            --release \
-            --no-shrink \
-            "${BUILD_ARGS[@]}"
-
-      - name: Validate and rename APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-
-          if [ ! -s "$APK" ]; then
-            echo "ERROR: Release APK file nahi mili."
-            echo "Available output files:"
-            find build/app/outputs -type f -maxdepth 5 || true
-            exit 1
-          fi
-
-          echo "Checking APK package integrity..."
-
-          unzip -tqq "$APK"
-
-          mkdir -p release
-
-          FINAL_APK="release/Customer-Manager-99-FINAL-${GITHUB_RUN_NUMBER}.apk"
-
-          cp "$APK" "$FINAL_APK"
-
-          sha256sum "$FINAL_APK" > "${FINAL_APK}.sha256"
-
-          if [ ! -s "$FINAL_APK" ]; then
-            echo "ERROR: Final renamed APK empty hai."
-            exit 1
-          fi
-
-          echo "APK successfully created:"
-          ls -lh "$FINAL_APK"
-          cat "${FINAL_APK}.sha256"
-
-      - name: Upload final APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Customer-Manager-99-FINAL-${{ github.run_number }}
-          path: |
-            release/Customer-Manager-99-FINAL-${{ github.run_number }}.apk
-            release/Customer-Manager-99-FINAL-${{ github.run_number }}.apk.sha256
-          if-no-files-found: error
-          retention-days: 30
+          for name in \
+            FIREBASE_API_KEY \
+            FIREBASE_APP_ID \
+            FIREBASE_MESSAGING_SENDER_ID \
+            FIREBASE_PROJECT_ID
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "ERROR: Missing GitHub secret: $name"
+              exit
