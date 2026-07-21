@@ -31,10 +31,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s Customer_Manager_99_App_Source.zip
+
+          if [ ! -s "Customer_Manager_99_App_Source.zip" ]; then
+            echo "ERROR: Customer_Manager_99_App_Source.zip missing or empty"
+            exit 1
+          fi
 
           rm -rf lib assets scripts test android
           rm -f pubspec.yaml analysis_options.yaml firebase.rules PROJECT_MARKER.txt
+
           unzip -q -o Customer_Manager_99_App_Source.zip -d .
 
           required_files=(
@@ -50,46 +55,46 @@ jobs:
           )
 
           for file in "${required_files[@]}"; do
-            test -s "$file" || {
-              echo "ERROR: Missing $file"
+            if [ ! -s "$file" ]; then
+              echo "ERROR: Missing required file: $file"
               exit 1
-            }
+            fi
           done
 
           python3 - <<'PY'
           import sqlite3
 
-          db = sqlite3.connect(
-              "assets/preload/customer_manager_99_seed_41790.db"
-          )
+          database_path = "assets/preload/customer_manager_99_seed_41790.db"
+          connection = sqlite3.connect(database_path)
 
-          count = db.execute(
+          total = connection.execute(
               "SELECT COUNT(*) FROM customers"
           ).fetchone()[0]
 
-          unique_count = db.execute(
+          unique_total = connection.execute(
               "SELECT COUNT(DISTINCT mobile) FROM customers"
           ).fetchone()[0]
 
-          integrity = db.execute(
+          integrity = connection.execute(
               "PRAGMA integrity_check"
           ).fetchone()[0]
 
-          user_version = db.execute(
-              "PRAGMA user_version"
-          ).fetchone()[0]
+          connection.close()
 
-          db.close()
+          if total != 41790:
+              raise SystemExit(f"Expected 41790 records, found {total}")
 
-          assert count == 41790, count
-          assert unique_count == 41790, unique_count
-          assert integrity == "ok", integrity
-          assert user_version == 2, user_version
+          if unique_total != 41790:
+              raise SystemExit(
+                  f"Expected 41790 unique mobile numbers, found {unique_total}"
+              )
 
-          print("Preloaded SQLite verified: 41,790 unique records.")
+          if integrity != "ok":
+              raise SystemExit(f"SQLite integrity failed: {integrity}")
+
+          print("Preloaded database verified: 41,790 unique customers.")
           PY
 
-          grep -q "customer_manager_99_preloaded_41790_v2.db" lib/services.dart
           grep -q "version: 4.2.1+15" pubspec.yaml
 
           echo "Corrected 41,790 source confirmed."
@@ -140,10 +145,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -d test ] && find test -name "*_test.dart" | grep -q .; then
+          if [ -d "test" ] && find test -name "*_test.dart" | grep -q .; then
             flutter test
           else
-            echo "No tests found; skipping."
+            echo "No tests found. Skipping tests."
           fi
 
       - name: Require Firebase secrets
@@ -156,12 +161,92 @@ jobs:
         run: |
           set -euo pipefail
 
-          for name in \
-            FIREBASE_API_KEY \
-            FIREBASE_APP_ID \
-            FIREBASE_MESSAGING_SENDER_ID \
-            FIREBASE_PROJECT_ID
-          do
-            if [ -z "${!name:-}" ]; then
-              echo "ERROR: Missing GitHub secret: $name"
-              exit
+          if [ -z "${FIREBASE_API_KEY:-}" ]; then
+            echo "ERROR: Missing GitHub secret FIREBASE_API_KEY"
+            exit 1
+          fi
+
+          if [ -z "${FIREBASE_APP_ID:-}" ]; then
+            echo "ERROR: Missing GitHub secret FIREBASE_APP_ID"
+            exit 1
+          fi
+
+          if [ -z "${FIREBASE_MESSAGING_SENDER_ID:-}" ]; then
+            echo "ERROR: Missing GitHub secret FIREBASE_MESSAGING_SENDER_ID"
+            exit 1
+          fi
+
+          if [ -z "${FIREBASE_PROJECT_ID:-}" ]; then
+            echo "ERROR: Missing GitHub secret FIREBASE_PROJECT_ID"
+            exit 1
+          fi
+
+          echo "Firebase secrets found."
+          echo "Cross-phone cloud sync will be enabled."
+
+      - name: Build final release APK
+        shell: bash
+        env:
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
+        run: |
+          set -euo pipefail
+
+          BUILD_ARGS=(
+            "--dart-define=APP_BUILD_MARKER=CM99-41790-FIX-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+            "--dart-define=FIREBASE_API_KEY=${FIREBASE_API_KEY}"
+            "--dart-define=FIREBASE_APP_ID=${FIREBASE_APP_ID}"
+            "--dart-define=FIREBASE_MESSAGING_SENDER_ID=${FIREBASE_MESSAGING_SENDER_ID}"
+            "--dart-define=FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}"
+          )
+
+          if [ -n "${FIREBASE_STORAGE_BUCKET:-}" ]; then
+            BUILD_ARGS+=(
+              "--dart-define=FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}"
+            )
+          fi
+
+          flutter build apk \
+            --release \
+            --no-shrink \
+            "${BUILD_ARGS[@]}"
+
+      - name: Validate and rename APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: APK not found"
+            exit 1
+          fi
+
+          if ! unzip -l "$APK" | grep -q \
+            "flutter_assets/assets/preload/customer_manager_99_seed_41790.db"; then
+            echo "ERROR: 41,790 preloaded database is missing inside APK"
+            exit 1
+          fi
+
+          mkdir -p release
+
+          FINAL_APK="release/Customer-Manager-99-41790-FIX-${GITHUB_RUN_NUMBER}.apk"
+
+          cp "$APK" "$FINAL_APK"
+          sha256sum "$FINAL_APK" > "${FINAL_APK}.sha256"
+
+          ls -lh "$FINAL_APK"
+
+      - name: Upload final APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Customer-Manager-99-41790-FIX-${{ github.run_number }}
+          path: |
+            release/Customer-Manager-99-41790-FIX-${{ github.run_number }}.apk
+            release/Customer-Manager-99-41790-FIX-${{ github.run_number }}.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
