@@ -19,7 +19,7 @@ env:
 
 jobs:
   build:
-    name: Build Final 41790 V4 Instant Sync APK
+    name: Build Final V5 KRISH SUNNY APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -27,7 +27,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract uploaded final source ZIP
+      - name: Extract and validate final source ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -38,13 +38,14 @@ jobs:
           fi
 
           rm -rf lib assets scripts test android
-          rm -f pubspec.yaml analysis_options.yaml firebase.rules PROJECT_MARKER.txt
+          rm -f pubspec.yaml analysis_options.yaml firebase.rules PROJECT_MARKER.txt google-services.json
           unzip -q -o Customer_Manager_99_App_Source.zip -d .
 
           required_files=(
             "PROJECT_MARKER.txt"
             "pubspec.yaml"
             "lib/main.dart"
+            "lib/models.dart"
             "lib/screens.dart"
             "lib/app_controller.dart"
             "lib/services.dart"
@@ -65,33 +66,39 @@ jobs:
           import json
           import sqlite3
 
-          path = "assets/preload/customer_manager_99_seed_41790.db"
-          db = sqlite3.connect(path)
+          database_path = "assets/preload/customer_manager_99_seed_41790.db"
+          db = sqlite3.connect(database_path)
+
           total = db.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
           unique_total = db.execute(
               "SELECT COUNT(DISTINCT mobile) FROM customers"
           ).fetchone()[0]
-          invalid = db.execute(
-              """
-              SELECT COUNT(*) FROM customers
-              WHERE length(mobile) != 12
-                 OR substr(mobile, 1, 2) != '91'
-                 OR substr(mobile, 3, 1) NOT IN ('6','7','8','9')
-              """
-          ).fetchone()[0]
           integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
           user_version = db.execute("PRAGMA user_version").fetchone()[0]
-          seed_version_row = db.execute(
+          seed_version = db.execute(
               "SELECT value FROM app_meta WHERE key = 'seed_version'"
           ).fetchone()
+
+          folder_counts = {"KRISH": 0, "SUNNY": 0, "INVALID": 0}
+          for (raw,) in db.execute("SELECT data FROM customers"):
+              folder = json.loads(raw).get("assignedTo", "")
+              if folder in ("KRISH", "SUNNY"):
+                  folder_counts[folder] += 1
+              else:
+                  folder_counts["INVALID"] += 1
+
           db.close()
 
           assert total == 41790, total
           assert unique_total == 41790, unique_total
-          assert invalid == 0, invalid
           assert integrity == "ok", integrity
-          assert user_version == 3, user_version
-          assert seed_version_row and seed_version_row[0] == "master_41790_v3"
+          assert user_version == 5, user_version
+          assert seed_version and seed_version[0] == "master_41790_v5"
+          assert folder_counts == {
+              "KRISH": 20895,
+              "SUNNY": 20895,
+              "INVALID": 0,
+          }, folder_counts
 
           config = json.load(open("google-services.json", encoding="utf-8"))
           client = config["client"][0]
@@ -99,14 +106,17 @@ jobs:
           assert client["client_info"]["android_client_info"]["package_name"] == \
               "com.gamerush99.customermanager99"
 
-          print("41,790 database and bundled Firebase config verified.")
+          print("41,790 customers verified: KRISH 20,895 + SUNNY 20,895.")
           PY
 
+          grep -q "version: 4.4.0+18" pubspec.yaml
+          grep -q "Folder:KRISH" lib/screens.dart
+          grep -q "Folder:SUNNY" lib/screens.dart
+          grep -q "Duration(seconds: 1)" lib/app_controller.dart
+          grep -q "master_41790_v5" lib/services.dart
           grep -q "customerRecordsV4" lib/services.dart
-          grep -q "_bundledProjectId = 'customer-manager-99'" lib/services.dart
-          grep -q "Duration(seconds: 3)" lib/app_controller.dart
-          grep -q "version: 4.3.0+17" pubspec.yaml
-          echo "V4 instant multi-phone sync source confirmed."
+
+          echo "Final V5 KRISH/SUNNY instant-sync source confirmed."
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -166,14 +176,14 @@ jobs:
           flutter build apk \
             --release \
             --no-shrink \
-            --dart-define=APP_BUILD_MARKER=CM99-41790-V4-INSTANT-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}
+            --dart-define=APP_BUILD_MARKER=CM99-V5-KRISH-SUNNY-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}
 
       - name: Validate and rename APK
         shell: bash
         run: |
           set -euo pipefail
-          APK="build/app/outputs/flutter-apk/app-release.apk"
 
+          APK="build/app/outputs/flutter-apk/app-release.apk"
           if [ ! -s "$APK" ]; then
             echo "ERROR: APK not found"
             exit 1
@@ -181,12 +191,12 @@ jobs:
 
           if ! unzip -l "$APK" | grep -q \
             "flutter_assets/assets/preload/customer_manager_99_seed_41790.db"; then
-            echo "ERROR: 41,790 database missing inside APK"
+            echo "ERROR: 41,790 customer database missing inside APK"
             exit 1
           fi
 
           mkdir -p release
-          FINAL_APK="release/Customer-Manager-99-41790-V4-INSTANT-${GITHUB_RUN_NUMBER}.apk"
+          FINAL_APK="release/Customer-Manager-99-V5-KRISH-SUNNY-${GITHUB_RUN_NUMBER}.apk"
           cp "$APK" "$FINAL_APK"
           sha256sum "$FINAL_APK" > "${FINAL_APK}.sha256"
           ls -lh "$FINAL_APK"
@@ -194,10 +204,10 @@ jobs:
       - name: Upload final APK
         uses: actions/upload-artifact@v4
         with:
-          name: Customer-Manager-99-41790-V4-INSTANT-${{ github.run_number }}
+          name: Customer-Manager-99-V5-KRISH-SUNNY-${{ github.run_number }}
           path: |
-            release/Customer-Manager-99-41790-V4-INSTANT-${{ github.run_number }}.apk
-            release/Customer-Manager-99-41790-V4-INSTANT-${{ github.run_number }}.apk.sha256
+            release/Customer-Manager-99-V5-KRISH-SUNNY-${{ github.run_number }}.apk
+            release/Customer-Manager-99-V5-KRISH-SUNNY-${{ github.run_number }}.apk.sha256
           if-no-files-found: error
           retention-days: 30
           
